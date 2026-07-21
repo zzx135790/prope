@@ -65,7 +65,6 @@ def test_prope_torch():
 
     prope = PropeDotProductAttention(
         head_dim=head_dim,
-        cameras=cameras,
         patches_x=patches_x,
         patches_y=patches_y,
         image_width=image_width,

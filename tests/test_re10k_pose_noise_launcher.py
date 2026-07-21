@@ -153,14 +153,19 @@ def test_launcher_argv_fully_locks_the_aligned_protocol(synthetic_workspace) -> 
         "--pose-noise-test-levels", "0,0.01,0.02,0.03",
         "--pose-noise-test-corrupt", "2", "--pose-noise-seed", "1234",
         "--wandb-enabled", "--wandb-mode", "online",
+        "--wandb-project", "tokenmap-flag-rope",
         "--wandb-group", "re10k-pose-noise",
-        "--wandb-name", "pose_prope", "--output-dir", output,
+        "--wandb-name", "pose_prope",
+        "--wandb-id", "prope-prope", "--wandb-resume", "never",
+        "--wandb-required", "--output-dir", output,
     ]
     assert report["protocol"]["optimizer"] == {
         "name": "AdamW", "betas": [0.9, 0.95], "weight_decay": [0.5, 0.0]
     }
     assert report["protocol"]["scheduler"] == "ChainedScheduler(LinearLR,CosineAnnealingLR)"
     assert report["protocol"]["metrics"] == ["PSNR", "SSIM", "LPIPS", "metrics_<level>.json"]
+    assert report["runtime"]["wandb_id"] == "prope-prope"
+    assert report["runtime"]["wandb_required"] is True
     assert "--ckpt-subdir" not in report["argv"]
     assert report["protocol"]["checkpoint_root"] == f"{output}/ckpts"
     assert report["runtime"]["workspace_checkpoint_dir"] == environment[
@@ -190,6 +195,76 @@ def test_check_only_prints_json_without_dispatch_or_output_creation(
     assert payload["mode"] == "check-only"
     assert payload["argv"][0] == sys.executable
     assert not output.exists()
+
+
+def test_resume_requires_explicit_wandb_identity(synthetic_workspace, tmp_path) -> None:
+    launcher = _load_launcher()
+    environment, expected = synthetic_workspace
+    checkpoint = tmp_path / "step-000005000.pt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    with pytest.raises(RuntimeError, match="requires --wandb-run-id"):
+        launcher.build_launch_spec(
+            environment,
+            expected_fingerprints=expected,
+            resume=checkpoint,
+        )
+
+
+def test_resume_and_test_only_continue_same_wandb_run(synthetic_workspace, tmp_path) -> None:
+    launcher = _load_launcher()
+    environment, expected = synthetic_workspace
+    checkpoint = tmp_path / "step-000015000.pt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    report = launcher.build_launch_spec(
+        environment,
+        expected_fingerprints=expected,
+        resume=checkpoint,
+        wandb_run_id="original-prope-run",
+        test_only=True,
+    )
+
+    assert report["runtime"]["mode"] == "test-only"
+    assert report["runtime"]["wandb_id"] == "original-prope-run"
+    assert report["runtime"]["wandb_resume"] == "must"
+    assert report["argv"][-3:] == [
+        "--resume",
+        str(checkpoint.resolve()),
+        "--test-only",
+    ]
+    assert report["argv"][report["argv"].index("--wandb-resume") + 1] == "must"
+
+
+def test_pilot_preserves_full_model_and_changes_only_runtime_scale(synthetic_workspace) -> None:
+    launcher = _load_launcher()
+    environment, expected = synthetic_workspace
+
+    report = launcher.build_launch_spec(
+        environment,
+        expected_fingerprints=expected,
+        pilot=True,
+    )
+    argv = report["argv"]
+
+    assert report["runtime"]["mode"] == "pilot"
+    assert report["protocol"]["execution_mode"] == "pilot"
+    assert report["protocol"]["model"] == {
+        "layers": 6,
+        "d_model": 768,
+        "nhead": 16,
+        "ffn": 3072,
+    }
+    assert argv[argv.index("--max-steps") + 1] == "1"
+    assert argv[argv.index("--test-every") + 1] == "-1"
+    assert argv[argv.index("--dataset-batch-scenes") + 1] == "4"
+    assert argv[argv.index("--wandb-group") + 1] == "re10k-pose-noise-pilot"
+    assert argv[argv.index("--wandb-name") + 1] == "pilot_pose_prope"
+    assert report["runtime"]["wandb_id"] == "prope-prope-pilot"
+    assert argv[-2:] == [
+        "--output-dir",
+        f'{environment["WORKSPACE_ARTIFACT_DIR"]}/re10k_pose_prope_pilot',
+    ]
 
 
 def test_normal_mode_dispatches_only_after_preflight(

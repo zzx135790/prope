@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Mapping, Sequence
@@ -33,6 +34,7 @@ _REQUIRED_ENVIRONMENT = (
     "RE10K_TRAIN_DIR",
     "RE10K_TEST_DIR",
 )
+_WANDB_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _absolute_path(environment: Mapping[str, str], name: str) -> Path:
@@ -124,11 +126,14 @@ def _check_fingerprints(observed: Mapping[str, object], expected: Mapping[str, o
             )
 
 
-def _protocol_facts(paths: Mapping[str, Path], effective_count: int) -> dict[str, object]:
+def _protocol_facts(
+    paths: Mapping[str, Path], effective_count: int, *, pilot: bool
+) -> dict[str, object]:
     return {
+        "execution_mode": "pilot" if pilot else "formal",
         "amp": False,
         "batch_scenes": 4,
-        "checkpoint_every": 5000,
+        "checkpoint_every": 1 if pilot else 5000,
         "checkpoint_root": str(paths["output"] / "ckpts"),
         "effective_test_scenes": effective_count,
         "image_shape": [256, 256, 3],
@@ -156,18 +161,35 @@ def _protocol_facts(paths: Mapping[str, Path], effective_count: int) -> dict[str
         "qk_norm": False,
         "scheduler": "ChainedScheduler(LinearLR,CosineAnnealingLR)",
         "seed": 0,
-        "steps": 15000,
+        "steps": 1 if pilot else 15000,
         "test_context_views": 4,
         "test_target_views": 3,
         "train_context_views": 4,
         "train_supervised_views": 1,
         "warmup_steps": 2500,
-        "wandb": {"group": "re10k-pose-noise", "name": "pose_prope"},
+        "wandb": {
+            "project": "tokenmap-flag-rope",
+            "group": "re10k-pose-noise-pilot" if pilot else "re10k-pose-noise",
+            "name": "pilot_pose_prope" if pilot else "pose_prope",
+        },
     }
 
 
-def _command(paths: Mapping[str, Path]) -> list[str]:
-    return [
+def _command(
+    paths: Mapping[str, Path],
+    *,
+    resume_checkpoint: Path | None,
+    test_only: bool,
+    wandb_id: str,
+    pilot: bool,
+) -> list[str]:
+    max_steps = "1" if pilot else "15000"
+    test_every = "-1" if pilot else "15000"
+    checkpoint_every = "1" if pilot else "5000"
+    print_every = "1" if pilot else "200"
+    wandb_group = "re10k-pose-noise-pilot" if pilot else "re10k-pose-noise"
+    wandb_name = "pilot_pose_prope" if pilot else "pose_prope"
+    command = [
         sys.executable,
         "-m", "torch.distributed.run", "--standalone", "--nnodes=1",
         "--nproc-per-node=1", "--module", "nvs.trainval", "lvsm",
@@ -176,8 +198,8 @@ def _command(paths: Mapping[str, Path]) -> list[str]:
         "--dataset-input-views", "4", "--dataset-supervise-views", "1",
         "--dataset-batch-scenes", "4", "--test-input-views", "4",
         "--test-supervise-views", "3", "--test-index-fp", str(paths["index"]),
-        "--max-steps", "15000", "--test-every", "15000",
-        "--ckpt-every", "5000", "--print-every", "200",
+        "--max-steps", max_steps, "--test-every", test_every,
+        "--ckpt-every", checkpoint_every, "--print-every", print_every,
         "--perceptual-loss-w", "0.5", "--lr", "4e-4", "--warmup-steps", "2500",
         "--model-config.ref-views", "4", "--model-config.tar-views", "1",
         "--model-config.img-shape", "256", "256", "3",
@@ -197,15 +219,28 @@ def _command(paths: Mapping[str, Path]) -> list[str]:
         "--pose-noise-test-levels", "0,0.01,0.02,0.03",
         "--pose-noise-test-corrupt", "2", "--pose-noise-seed", "1234",
         "--wandb-enabled", "--wandb-mode", "online",
-        "--wandb-group", "re10k-pose-noise", "--wandb-name", "pose_prope",
+        "--wandb-project", "tokenmap-flag-rope",
+        "--wandb-group", wandb_group, "--wandb-name", wandb_name,
+        "--wandb-id", wandb_id,
+        "--wandb-resume", "must" if resume_checkpoint is not None else "never",
+        "--wandb-required",
         "--output-dir", str(paths["output"]),
     ]
+    if resume_checkpoint is not None:
+        command.extend(["--resume", str(resume_checkpoint)])
+    if test_only:
+        command.append("--test-only")
+    return command
 
 
 def build_launch_spec(
     environment: Mapping[str, str],
     *,
     expected_fingerprints: Mapping[str, object] = LOCKED_FINGERPRINTS,
+    resume: str | Path | None = None,
+    wandb_run_id: str | None = None,
+    test_only: bool = False,
+    pilot: bool = False,
 ) -> dict[str, object]:
     paths = {name: _absolute_path(environment, name) for name in _REQUIRED_ENVIRONMENT}
     workspace = paths["WORKSPACE_ROOT"]
@@ -232,6 +267,29 @@ def build_launch_spec(
         except ValueError as error:
             raise RuntimeError(f"{key} must stay under WORKSPACE_ARTIFACT_DIR") from error
 
+    resume_checkpoint = None
+    if resume is not None:
+        resume_checkpoint = Path(resume)
+        if not resume_checkpoint.is_absolute():
+            raise RuntimeError("--resume checkpoint must be an absolute path")
+        resume_checkpoint = resume_checkpoint.resolve()
+        if not resume_checkpoint.is_file():
+            raise RuntimeError(f"--resume checkpoint does not exist: {resume_checkpoint}")
+        if not wandb_run_id:
+            raise RuntimeError("--resume requires --wandb-run-id to continue the same W&B run")
+    elif test_only:
+        raise RuntimeError("--test-only requires --resume and --wandb-run-id")
+    if pilot and (resume_checkpoint is not None or test_only):
+        raise RuntimeError("--pilot cannot be combined with --resume or --test-only")
+
+    arm_suffix = "prope-pilot" if pilot else "prope"
+    resolved_wandb_id = wandb_run_id or f"{artifact.name}-{arm_suffix}"
+    if not _WANDB_ID_PATTERN.fullmatch(resolved_wandb_id):
+        raise RuntimeError(
+            "W&B run ID must start with an alphanumeric character and contain only "
+            "letters, digits, '.', '_' or '-' (maximum 128 characters)"
+        )
+
     index_path = canonical["ray"] / "assets/evaluation_index_re10k_4ctx.json"
     train_names = _scene_names(canonical["train"], "RE10K train")
     test_names = _scene_names(canonical["test"], "RE10K test")
@@ -250,13 +308,19 @@ def build_launch_spec(
     launch_paths = {
         "ray": canonical["ray"],
         "index": index_path.resolve(),
-        "output": artifact / "re10k_pose_prope",
+        "output": artifact / ("re10k_pose_prope_pilot" if pilot else "re10k_pose_prope"),
     }
     return {
-        "argv": _command(launch_paths),
+        "argv": _command(
+            launch_paths,
+            resume_checkpoint=resume_checkpoint,
+            test_only=test_only,
+            wandb_id=resolved_wandb_id,
+            pilot=pilot,
+        ),
         "cwd": str(canonical["ray"]),
         "data": data,
-        "protocol": _protocol_facts(launch_paths, len(effective_names)),
+        "protocol": _protocol_facts(launch_paths, len(effective_names), pilot=pilot),
         "runtime": {
             "workspace_root": str(workspace),
             "prope_worktree": str(canonical["prope"]),
@@ -265,6 +329,15 @@ def build_launch_spec(
             "test_dir": str(canonical["test"]),
             "log_dir": str(paths["WORKSPACE_LOG_DIR"]),
             "workspace_checkpoint_dir": str(paths["WORKSPACE_CHECKPOINT_DIR"]),
+            "mode": (
+                "pilot"
+                if pilot
+                else ("test-only" if test_only else ("resume" if resume_checkpoint else "train"))
+            ),
+            "resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+            "wandb_id": resolved_wandb_id,
+            "wandb_resume": "must" if resume_checkpoint else "never",
+            "wandb_required": True,
         },
     }
 
@@ -277,10 +350,19 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--resume")
+    parser.add_argument("--wandb-run-id")
+    parser.add_argument("--test-only", action="store_true")
+    parser.add_argument("--pilot", action="store_true")
     args = parser.parse_args(argv)
     runtime_environment = os.environ if environment is None else environment
     report = build_launch_spec(
-        runtime_environment, expected_fingerprints=expected_fingerprints
+        runtime_environment,
+        expected_fingerprints=expected_fingerprints,
+        resume=args.resume,
+        wandb_run_id=args.wandb_run_id,
+        test_only=args.test_only,
+        pilot=args.pilot,
     )
     if args.check_only:
         payload = {"status": "ok", "mode": "check-only", **report}

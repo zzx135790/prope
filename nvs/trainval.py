@@ -27,6 +27,28 @@ from prope.utils.functional import random_SO3
 from prope.utils.runner import Launcher, LauncherConfig, nested_to_device
 
 
+def _re10k_dataset_types():
+    mode = os.environ.get("WORKSPACE_DATASET_MODE", "legacy")
+    if mode == "legacy":
+        return TrainDataset, EvalDataset
+    if os.environ.get("WORKSPACE_DATASET_CONSUMER_ADAPTER") != "prope-multiview-nvs-v1":
+        raise ValueError("PRoPE received an undeclared dataset consumer adapter")
+    from nvs.dataset_contract import ContractEvalDataset, ContractTrainDataset
+
+    return ContractTrainDataset, ContractEvalDataset
+
+
+def _re10k_train_scenes(train_root: str) -> List[str]:
+    if os.environ.get("WORKSPACE_DATASET_MODE", "legacy") == "legacy":
+        return sorted(glob.glob(f"{train_root}/*"))
+    from rope_contract.dataset.migration import DatasetRuntimeBinding
+
+    binding = DatasetRuntimeBinding.from_environment(
+        expected_consumer_adapter_id="prope-multiview-nvs-v1"
+    )
+    return list(binding.create_provider().list_scene_ids(split="train"))
+
+
 def write_tensor_to_image(
     x: Tensor,
     path: str,
@@ -157,8 +179,10 @@ class LVSMLauncher(Launcher):
 
     def train_initialize(self) -> Dict[str, Any]:
         # ------------- Setup Data. ------------- #
-        scenes = sorted(glob.glob("./data_processed/realestate10k/train/*"))
-        dataset = TrainDataset(
+        train_root = os.environ.get("RE10K_TRAIN_DIR", "./data_processed/realestate10k/train")
+        scenes = _re10k_train_scenes(train_root)
+        train_dataset_type, _ = _re10k_dataset_types()
+        dataset = train_dataset_type(
             scenes,
             patch_size=self.config.dataset_patch_size,
             zoom_factor=self.config.train_zoom_factor,
@@ -325,9 +349,10 @@ class LVSMLauncher(Launcher):
                 self.config.test_input_views == 2
                 and self.config.test_supervise_views == 3
             ), "Invalid input views and supervise views for RE10K, should be 2 and 3 respectively."
-        folder = "./data_processed/realestate10k/test/"
+        folder = os.environ.get("RE10K_TEST_DIR", "./data_processed/realestate10k/test/")
         for zoom_factor in self.config.test_zoom_factor:
-            dataset = EvalDataset(
+            _, eval_dataset_type = _re10k_dataset_types()
+            dataset = eval_dataset_type(
                 folder=folder,
                 patch_size=self.config.dataset_patch_size,
                 zoom_factor=zoom_factor,

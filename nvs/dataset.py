@@ -12,6 +12,14 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 
+def _resolve_re10k_eval_index_file(index_file_name: str) -> str:
+    if os.path.isabs(index_file_name):
+        return index_file_name
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "../assets", index_file_name
+    )
+
+
 def _normalize_poses(
     in_c2ws: torch.Tensor,
     scene_scale_factor: float = 1.35,
@@ -423,9 +431,7 @@ class EvalDataset(Dataset):
                 ), f"Invalid input views and supervise views for RE10K, should be 2 and 3 respectively, but got {input_views} and {supervise_views}."
                 json_file_name = "evaluation_index_re10k.json"
 
-        index_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), f"../assets/{json_file_name}"
-        )
+        index_file = _resolve_re10k_eval_index_file(json_file_name)
         assert os.path.exists(index_file), f"Index file not found: {index_file}"
         with open(index_file, "r") as f:
             index_info = json.load(f)

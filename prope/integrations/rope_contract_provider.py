@@ -108,6 +108,8 @@ class ProPEGeometry:
             )
         if w2cs.shape[:2] != intrinsics.shape[:2]:
             raise ShapeMismatch("w2cs and intrinsics must share [B,C]")
+        if w2cs.shape[0] <= 0 or w2cs.shape[1] <= 0:
+            raise ShapeMismatch("w2cs must contain at least one batch and camera")
         if w2cs.device != intrinsics.device or w2cs.dtype != intrinsics.dtype:
             raise ValidationError("w2cs and intrinsics must share dtype and device")
         object.__setattr__(self, "w2cs", w2cs)
@@ -298,6 +300,10 @@ class ProPEProvider(RopeProvider):
     def __init__(self, *, patches_x: int, patches_y: int, image_width: int, image_height: int,
                  head_dim: int = 128, freq_base: float = 100.0, freq_scale: float = 1.0,
                  provider_id: str = PROVIDER_ID) -> None:
+        if patches_x <= 0 or patches_y <= 0 or image_width <= 0 or image_height <= 0:
+            raise ShapeMismatch("patch grid and image dimensions must be positive")
+        if head_dim <= 0 or head_dim % 4:
+            raise ShapeMismatch("PRoPE head_dim must be a positive multiple of four", actual=head_dim)
         self.patches_x, self.patches_y = int(patches_x), int(patches_y)
         self.image_width, self.image_height = int(image_width), int(image_height)
         self.head_dim = int(head_dim)

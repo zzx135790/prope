@@ -31,6 +31,7 @@ try:
         TransformRequest,
         TransformResult,
         UnsupportedCapability,
+        InvalidContinuation,
         ValidationError,
     )
 except ImportError as exc:  # pragma: no cover - depends on workspace env
@@ -233,6 +234,10 @@ class ProPESession(RopeSession):
         self.geometry = geometry
         self._pending: dict[str, tuple[torch.Tensor, Any]] = {}
 
+    def close(self) -> None:
+        self._pending.clear()
+        super().close()
+
     @staticmethod
     def _heads(value: torch.Tensor, nhead: int) -> torch.Tensor:
         if value.ndim != 4:
@@ -277,7 +282,7 @@ class ProPESession(RopeSession):
         try:
             q_out, native = self._pending[continuation.token]
         except KeyError as exc:
-            raise ValidationError("unknown or already restored PRoPE continuation") from exc
+            raise InvalidContinuation("unknown or already restored PRoPE continuation") from exc
         message = _tensor(attention_message, "attention_message")
         if tuple(message.shape) != tuple(q_out.shape) or message.device != q_out.device or message.dtype != q_out.dtype:
             raise ShapeMismatch("attention message must match transformed query", expected=tuple(q_out.shape), actual=tuple(message.shape))

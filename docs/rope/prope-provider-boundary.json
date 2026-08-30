@@ -1,0 +1,38 @@
+{
+  "schema_version": "1",
+  "contract_version": {"major": 1, "minor": 0, "patch": 0},
+  "contract_digest": "4977153b296b6a2c22d907071372e378c8d6c784bc5caee97659551625fd2f39",
+  "provider_id": "prope",
+  "provider_version": "1",
+  "provider_adapter_id": "prope-contract-provider",
+  "provider_adapter_version": "1",
+  "provider_source_commit": "47a3bf8",
+  "consumer_id": "rope-contract-provider-boundary",
+  "consumer_version": "1",
+  "consumer_adapter_id": "rope-contract-provider-boundary",
+  "consumer_adapter_version": "1",
+  "source_commits": {"prope": "47a3bf8", "rope-contract": "bd21025"},
+  "feature_id": "prope_v1",
+  "profile_id": "prope_v1",
+  "capability_digest": "prope-v1",
+  "fixture_digest": "b9ce1f3b2042612ff27b945c8d19271d2ad1023c2fea167f1e209d504fcef255",
+  "tensor_layout_summary": {
+    "owner": "prope",
+    "attention_kernel": "consumer",
+    "token_order": "camera_major_token_major"
+  },
+  "validation_outcome": {
+    "status": "verified",
+    "scope": "provider-transform-restore",
+    "attention_kernel_owner": "consumer",
+    "legacy_selector": "legacy_native",
+    "contract_selector": "contract"
+  },
+  "status": "verified",
+  "metadata": {
+    "source": "prope-torch-provider",
+    "rollback_selector": "legacy_native",
+    "scope": "provider-boundary; benchmark consumer promotion remains separate"
+  },
+  "digest": "6a177384ac2ca1d684b871de3024af3a024d197e5dd78bbe345d8d811e11801a"
+}

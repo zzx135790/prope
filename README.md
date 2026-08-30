@@ -48,4 +48,12 @@ Or if you simplly want to render some videos out (trajectory is predefined):
 bash ./scripts/nvs.sh --ray_encoding camray --pos_enc prope --gpus "0,1" --test-render-video
 ```
 
+# Contract integration
+
+The optional `prope.integrations.rope_contract_provider` exposes the canonical
+PRoPE Torch precompute/apply lifecycle through `rope-contract`. Consumers run
+`scaled_dot_product_attention` between `transform_inputs` and
+`restore_output`; `ProPEProvider.legacy_native()` is retained for explicit
+rollback. The baseline Torch package is self-attention only, so cross
+attention fails closed with a typed unsupported-capability error.
 
